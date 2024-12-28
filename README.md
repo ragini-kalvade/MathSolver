@@ -39,10 +39,8 @@ pip install torch torch-geometric networkx matplotlib numpy ipython
 3. Run the main script:
 
 ```bash
-python <script_name>.py
+python main.py
 ```
-
-Replace `<script_name>` with the filename of the script.
 
 4. The interactive visualizer window will open, displaying the problem-solving process.
 
