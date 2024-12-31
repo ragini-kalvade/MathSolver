@@ -20,7 +20,6 @@ class EquationEncoder:
         self.idx_to_char = {v: k for k, v in self.char_to_idx.items()}
         
     def encode_equation(self, equation):
-        """Convert equation string to tensor."""
         encoded = torch.zeros(self.max_length, dtype=torch.long)
         for i, char in enumerate(equation[:self.max_length]):
             if char in self.char_to_idx:
@@ -28,55 +27,36 @@ class EquationEncoder:
         return encoded
     
     def decode_equation(self, encoded):
-        """Convert tensor back to equation string."""
         return ''.join(self.idx_to_char[idx.item()] for idx in encoded if idx.item() in self.idx_to_char)
 
 class EquationType:
     LINEAR = 'linear'
     QUADRATIC = 'quadratic'
 
-class EquationClassifier(nn.Module):
-    def __init__(self, input_size, hidden_size):
-        super().__init__()
-        self.embedding = nn.Embedding(16, hidden_size)  # 16 possible characters
-        self.lstm = nn.LSTM(hidden_size, hidden_size, batch_first=True)
-        self.fc = nn.Linear(hidden_size, 2)  # 2 classes: linear or quadratic
-        
-    def forward(self, x):
-        x = self.embedding(x)
-        lstm_out, _ = self.lstm(x)
-        return self.fc(lstm_out[:, -1])
-
-class EquationSolver(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size):
-        super().__init__()
-        self.embedding = nn.Embedding(16, hidden_size)
-        self.lstm = nn.LSTM(hidden_size, hidden_size, num_layers=2, batch_first=True)
-        self.fc_layers = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, output_size)
-        )
-        
-    def forward(self, x):
-        x = self.embedding(x)
-        lstm_out, _ = self.lstm(x)
-        return self.fc_layers(lstm_out[:, -1])
+class DirectSolver:
+    @staticmethod
+    def solve_linear(a, b, c):
+        """Solve linear equation ax + b = c"""
+        return (c - b) / a
+    
+    @staticmethod
+    def solve_quadratic(a, b, c):
+        """Solve quadratic equation ax^2 + bx + c = 0"""
+        discriminant = b**2 - 4*a*c
+        if discriminant < 0:
+            return None  # No real solutions
+        elif discriminant == 0:
+            x = -b / (2*a)
+            return [x, x]
+        else:
+            x1 = (-b + np.sqrt(discriminant)) / (2*a)
+            x2 = (-b - np.sqrt(discriminant)) / (2*a)
+            return [x1, x2]
 
 class MLMathSolver:
     def __init__(self):
         self.encoder = EquationEncoder()
-        self.classifier = EquationClassifier(input_size=20, hidden_size=128)
-        self.linear_solver = EquationSolver(input_size=20, hidden_size=128, output_size=1)
-        self.quadratic_solver = EquationSolver(input_size=20, hidden_size=128, output_size=2)
-        
-        # Load pre-trained models if available
-        try:
-            self.classifier.load_state_dict(torch.load('classifier_model.pth'))
-            self.linear_solver.load_state_dict(torch.load('linear_solver_model.pth'))
-            self.quadratic_solver.load_state_dict(torch.load('quadratic_solver_model.pth'))
-        except FileNotFoundError:
-            print("Pre-trained models not found. Models will need training.")
+        self.direct_solver = DirectSolver()
     
     def parse_equation(self, equation_str):
         """Parse equation and identify its type."""
@@ -84,11 +64,9 @@ class MLMathSolver:
         equation_str = equation_str.replace(" ", "").lower()
         
         # Check if equation is quadratic
-        is_quadratic = 'x^2' in equation_str or 'x²' in equation_str
-        
-        # Extract coefficients
-        if is_quadratic:
-            # Match quadratic equation pattern ax^2 + bx + c = 0
+        if 'x^2' in equation_str or 'x²' in equation_str:
+            # Parse quadratic equation ax^2 + bx + c = 0
+            equation_str = equation_str.replace('x²', 'x^2')
             pattern = r'([-+]?\d*)?x\^2([-+]?\d*)?x?([-+]?\d+)?=0'
             match = re.match(pattern, equation_str)
             if match:
@@ -97,7 +75,7 @@ class MLMathSolver:
                 c = float(match.group(3) or 0)
                 return EquationType.QUADRATIC, (a, b, c)
         else:
-            # Match linear equation pattern ax + b = c
+            # Parse linear equation ax + b = c
             pattern = r'([-+]?\d*)?x([-+]?\d+)?=(\d+)'
             match = re.match(pattern, equation_str)
             if match:
@@ -109,30 +87,19 @@ class MLMathSolver:
         raise ValueError("Invalid equation format")
     
     def solve_equation(self, equation_str):
-        """Solve the equation using appropriate ML model."""
-        # Encode equation
-        encoded_eq = self.encoder.encode_equation(equation_str)
-        encoded_eq = encoded_eq.unsqueeze(0)  # Add batch dimension
+        """Solve the equation using direct algebraic methods."""
+        eq_type, coefficients = self.parse_equation(equation_str)
         
-        # Classify equation type
-        with torch.no_grad():
-            eq_type_logits = self.classifier(encoded_eq)
-            eq_type_pred = torch.argmax(eq_type_logits, dim=1).item()
-            
-        # Solve based on type
-        if eq_type_pred == 0:  # Linear
-            with torch.no_grad():
-                solution = self.linear_solver(encoded_eq)
-                return [solution.item()]
+        if eq_type == EquationType.LINEAR:
+            a, b, c = coefficients
+            solution = self.direct_solver.solve_linear(a, b, c)
+            return [solution]
         else:  # Quadratic
-            with torch.no_grad():
-                solutions = self.quadratic_solver(encoded_eq)
-                return solutions.tolist()[0]
-    
-    def train_models(self, training_data):
-        """Train the models with provided data."""
-        # Training logic here
-        pass
+            a, b, c = coefficients
+            solutions = self.direct_solver.solve_quadratic(a, b, c)
+            if solutions is None:
+                return ["No real solutions"]
+            return solutions
 
 class SolutionVisualizer:
     def __init__(self, figsize=(12, 8)):
@@ -160,7 +127,7 @@ class SolutionVisualizer:
         self.btn_solve = Button(ax_solve, 'Solve')
         self.btn_solve.on_clicked(lambda _: self.solve_equation(self.text_input.text))
         
-        self.fig.suptitle('ML Math Equation Solver', fontsize=14)
+        self.fig.suptitle('Math Equation Solver', fontsize=14)
         
     def solve_equation(self, equation_str):
         """Handle equation solving and visualization."""
@@ -184,21 +151,26 @@ class SolutionVisualizer:
                 a, b, c = coefficients
                 y = a * x + b
                 self.ax_graph.plot(x, y)
-                self.ax_graph.axhline(y=0, color='k', linestyle='-', alpha=0.3)
-                self.ax_graph.axvline(x=0, color='k', linestyle='-', alpha=0.3)
-                self.ax_graph.grid(True, alpha=0.3)
-                self.ax_graph.set_title('Linear Function')
+                self.ax_graph.axhline(y=c, color='r', linestyle='--', alpha=0.5)
+                self.ax_graph.text(-9, c+0.5, f'y = {c}', color='r')
             else:  # Quadratic
                 a, b, c = coefficients
                 y = a * x**2 + b * x + c
                 self.ax_graph.plot(x, y)
-                self.ax_graph.axhline(y=0, color='k', linestyle='-', alpha=0.3)
-                self.ax_graph.axvline(x=0, color='k', linestyle='-', alpha=0.3)
-                self.ax_graph.grid(True, alpha=0.3)
-                self.ax_graph.set_title('Quadratic Function')
+                self.ax_graph.axhline(y=0, color='r', linestyle='--', alpha=0.5)
+                self.ax_graph.text(-9, 0.5, 'y = 0', color='r')
+            
+            self.ax_graph.axhline(y=0, color='k', linestyle='-', alpha=0.3)
+            self.ax_graph.axvline(x=0, color='k', linestyle='-', alpha=0.3)
+            self.ax_graph.grid(True, alpha=0.3)
+            self.ax_graph.set_title('Linear Function' if eq_type == EquationType.LINEAR else 'Quadratic Function')
             
             # Display solutions
-            solution_text = f"Solutions: {solutions}"
+            if isinstance(solutions[0], str):
+                solution_text = solutions[0]  # "No real solutions" case
+            else:
+                solution_text = f"x = {', '.join(f'{sol:.2f}' for sol in solutions)}"
+            
             self.ax_solution.text(0.5, 0.5, solution_text,
                                 fontsize=12, ha='center')
             self.ax_solution.axis('off')
@@ -211,43 +183,7 @@ class SolutionVisualizer:
             self.ax_solution.axis('off')
             plt.draw()
 
-def generate_training_data(num_samples=1000):
-    """Generate training data for the models."""
-    linear_equations = []
-    quadratic_equations = []
-    
-    for _ in range(num_samples):
-        # Generate linear equations
-        a = np.random.uniform(-10, 10)
-        b = np.random.uniform(-10, 10)
-        c = np.random.uniform(-10, 10)
-        linear_eq = f"{a}x + {b} = {c}"
-        solution = (c - b) / a
-        linear_equations.append((linear_eq, solution))
-        
-        # Generate quadratic equations
-        a = np.random.uniform(-10, 10)
-        b = np.random.uniform(-10, 10)
-        c = np.random.uniform(-10, 10)
-        quadratic_eq = f"{a}x^2 + {b}x + {c} = 0"
-        # Calculate solutions using quadratic formula
-        discriminant = b**2 - 4*a*c
-        if discriminant >= 0:
-            x1 = (-b + np.sqrt(discriminant)) / (2*a)
-            x2 = (-b - np.sqrt(discriminant)) / (2*a)
-            quadratic_equations.append((quadratic_eq, (x1, x2)))
-            
-    return linear_equations, quadratic_equations
-
 def main():
-    # Generate training data
-    linear_data, quadratic_data = generate_training_data()
-    
-    # Create and train solver
-    solver = MLMathSolver()
-    solver.train_models({'linear': linear_data, 'quadratic': quadratic_data})
-    
-    # Create and display visualizer
     visualizer = SolutionVisualizer()
     visualizer.setup_figure()
     plt.show()
